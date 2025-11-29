@@ -1487,11 +1487,15 @@ Zotero.Attachments = new function () {
 	 * @param {String[]} [options.methods] - See getFileResolvers()
 	 * @param {Number} [options.sameDomainRequestDelay=1000] - Minimum number of milliseconds
 	 *     between requests to the same domain (used in tests)
+	 * @param {Number} [options.maxConcurrent] - Maximum concurrent requests (default from
+	 *     pref findPDFs.maxConcurrent, or 3)
 	 * @return {Promise}
 	 */
 	this.addAvailableFiles = async function (items, options = {}) {
 		const MAX_CONSECUTIVE_DOMAIN_FAILURES = 5;
 		const SAME_DOMAIN_REQUEST_DELAY = options.sameDomainRequestDelay || 1000;
+		// Allow concurrent requests to different domains for faster processing
+		const MAX_CONCURRENT = options.maxConcurrent || Zotero.Prefs.get('findPDFs.maxConcurrent') || 3;
 		var queue;
 		
 		var domains = new Map();
@@ -1630,7 +1634,9 @@ Zotero.Attachments = new function () {
 				
 				// Resume paused item
 				if (current.continuation) {
-					current.continuation();
+					let cont = current.continuation;
+					current.continuation = null;  // Clear to prevent double-call
+					cont();
 					return;
 				}
 				
@@ -1678,6 +1684,8 @@ Zotero.Attachments = new function () {
 									current.domain = domain;
 									current.continuation = () => {
 										if (domainInfo.consecutiveFailures < MAX_CONSECUTIVE_DOMAIN_FAILURES) {
+											// Set cooldown for next request before proceeding
+											domainInfo.nextRequestTime = Date.now() + SAME_DOMAIN_REQUEST_DELAY;
 											resolve();
 										}
 										else {
@@ -1781,8 +1789,11 @@ Zotero.Attachments = new function () {
 					processNextItem();
 				});
 			}.bind(this);
-			
-			processNextItem();
+
+			// Start up to MAX_CONCURRENT parallel requests
+			for (let c = 0; c < MAX_CONCURRENT; c++) {
+				processNextItem();
+			}
 		});
 		
 		var numFiles = queue.reduce((accumulator, currentValue) => {
